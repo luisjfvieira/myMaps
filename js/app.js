@@ -235,9 +235,9 @@ function updateBaseLayerBar() {
 
 function bootMapFromState() {
   document.getElementById("projectName").value = state.projectName;
-  clearTimeout(githubSyncTimer);
+  clearTimeout(githubSyncTimer); githubSyncTimer = null;
   setSyncStatus(getGitHubConfig() ? "synced" : "");
-  clearTimeout(driveSyncTimer);
+  clearTimeout(driveSyncTimer); driveSyncTimer = null;
   setDriveSyncStatus(getDriveConfig() ? "synced" : "");
 
   // clear existing feature layers
@@ -1783,7 +1783,7 @@ function parseIndexArray(text) {
    a device/browser you trust.
 --------------------------------------------------------------------- */
 const LS_GITHUB = "mymaps:github"; // { repo: "owner/name", branch, token }
-const GITHUB_SYNC_DELAY = 8000;
+const SYNC_INTERVAL_MS = 120000; // autosave (GitHub/Drive) fires at most once per 2 minutes
 
 function getGitHubConfig() {
   try {
@@ -1853,11 +1853,17 @@ function setSyncStatus(kind, detail) {
 let githubSyncTimer = null;
 let githubSyncing = false;
 
+/* Throttled, not debounced: once an edit schedules a sync, further edits
+   don't push it back out — it always fires within SYNC_INTERVAL_MS, even
+   if you never stop editing. A pure debounce here could get starved
+   indefinitely during a long continuous editing session. */
 function scheduleGitHubSync() {
-  if (!getGitHubConfig()) return;
-  clearTimeout(githubSyncTimer);
+  if (!getGitHubConfig() || githubSyncTimer) return;
   setSyncStatus("pending");
-  githubSyncTimer = setTimeout(syncCurrentMapToGitHub, GITHUB_SYNC_DELAY);
+  githubSyncTimer = setTimeout(() => {
+    githubSyncTimer = null;
+    syncCurrentMapToGitHub();
+  }, SYNC_INTERVAL_MS);
 }
 
 async function syncCurrentMapToGitHub() {
@@ -1902,7 +1908,7 @@ async function pushAllLocalMapsToGitHub() {
   if (!ids.length) { toast("No local maps to push."); return; }
   toast(`Pushing ${ids.length} map(s) to GitHub…`);
 
-  clearTimeout(githubSyncTimer);
+  clearTimeout(githubSyncTimer); githubSyncTimer = null;
   githubSyncing = true;
 
   let index = [];
@@ -1982,7 +1988,7 @@ function openGitHubSettingsModal() {
   });
   document.getElementById("ghDisable").addEventListener("click", () => {
     clearGitHubConfig();
-    clearTimeout(githubSyncTimer);
+    clearTimeout(githubSyncTimer); githubSyncTimer = null;
     setSyncStatus("");
     closeModal();
     toast("GitHub sync turned off.");
@@ -2149,10 +2155,12 @@ let driveSyncTimer = null;
 let driveSyncing = false;
 
 function scheduleDriveSync() {
-  if (!getDriveConfig()) return;
-  clearTimeout(driveSyncTimer);
+  if (!getDriveConfig() || driveSyncTimer) return;
   setDriveSyncStatus("pending");
-  driveSyncTimer = setTimeout(syncCurrentMapToDrive, GITHUB_SYNC_DELAY);
+  driveSyncTimer = setTimeout(() => {
+    driveSyncTimer = null;
+    syncCurrentMapToDrive();
+  }, SYNC_INTERVAL_MS);
 }
 
 async function syncCurrentMapToDrive() {
@@ -2193,6 +2201,8 @@ async function pushAllLocalMapsToDrive() {
   const ids = Object.keys(idx);
   if (!ids.length) { toast("No local maps to push."); return; }
   toast(`Pushing ${ids.length} map(s) to Google Drive…`);
+  clearTimeout(driveSyncTimer); driveSyncTimer = null;
+  driveSyncing = true;
   try {
     const folderId = await driveFindOrCreateFolder();
     const indexFile = await driveFindFile(folderId, "index.json");
@@ -2220,6 +2230,8 @@ async function pushAllLocalMapsToDrive() {
   } catch (err) {
     console.error(err);
     toast("Could not push to Google Drive: " + err.message);
+  } finally {
+    driveSyncing = false;
   }
 }
 
@@ -2264,7 +2276,7 @@ function openDriveSettingsModal() {
   });
   document.getElementById("gdDisable").addEventListener("click", () => {
     clearDriveConfig();
-    clearTimeout(driveSyncTimer);
+    clearTimeout(driveSyncTimer); driveSyncTimer = null;
     setDriveSyncStatus("");
     closeModal();
     toast("Google Drive sync turned off.");

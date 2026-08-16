@@ -40,7 +40,7 @@ Deleting a map from the gallery is manual: delete its file from `maps/`, remove 
 1. **File > GitHub auto-sync settings…**
 2. Create a token at `github.com/settings/tokens` — a classic token with the `repo` scope, or a fine-grained token with **Contents: Read and write** on this repo.
 3. Enter `owner/repo`, the branch (usually `main`), and the token, then Save.
-4. From then on, edits to the open map are committed straight to `maps/` in your repo a few seconds after you stop editing — watch the status badge next to the map name (`☁ pending…` → `☁ syncing…` → `☁ synced`). **Push all local maps now** in that same dialog does a one-time bulk push of every map already saved in this browser.
+4. From then on, edits to the open map are committed straight to `maps/` in your repo — at most once every 2 minutes while you're actively editing, so it won't spam commits — watch the status badge next to the map name (`☁ pending…` → `☁ syncing…` → `☁ synced`). **Push all local maps now** in that same dialog does a one-time bulk push of every map already saved in this browser.
 
 The token is stored only in this browser's localStorage — only enable this on a device you trust, and revoke the token on GitHub any time to turn it off remotely.
 
@@ -52,7 +52,7 @@ Independent of GitHub sync — turn on one, the other, or both. Setup needs a on
 2. Under "Authorized JavaScript origins", add the URL(s) you'll use the app from (e.g. `https://<your-username>.github.io` and `http://localhost:5500` for local testing).
 3. Copy the generated Client ID (looks like `xxxxxxxxxx.apps.googleusercontent.com`) — no client secret is needed for this.
 4. In the app: **File > Google Drive sync settings…**, paste the Client ID, **Save & Connect**, and sign in with the Google account you want to save to.
-5. From then on, edits to the open map are saved into a **"My Maps Data"** folder in that Drive account a few seconds after you stop editing — watch the second status badge next to the map name (`🗂 pending…` → `🗂 syncing…` → `🗂 synced`). **Push all local maps now** does a one-time bulk push of every map already saved in this browser. **File > Browse Google Drive maps…** lists and opens anything saved there.
+5. From then on, edits to the open map are saved into a **"My Maps Data"** folder in that Drive account — at most once every 2 minutes while you're actively editing — watch the second status badge next to the map name (`🗂 pending…` → `🗂 syncing…` → `🗂 synced`). **Push all local maps now** does a one-time bulk push of every map already saved in this browser. **File > Browse Google Drive maps…** lists and opens anything saved there.
 
 The Client ID itself isn't secret, but it's stored in this browser's localStorage alongside a short-lived Google access token; the underlying Drive access only ever covers files this app created (the `drive.file` scope), not your whole Drive.
 
