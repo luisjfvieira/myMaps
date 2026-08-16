@@ -17,5 +17,6 @@
     ],
     "zoom": 3
   },
-  "baseLayer": "street"
+  "baseLayer": "street",
+  "repoFile": "untitled-map.json"
 }
