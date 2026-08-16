@@ -6,9 +6,10 @@ A self-hosted clone of Google My Maps — draw markers, lines, and shapes across
 
 - **Unlimited layers** — add, rename, recolor, reorder, duplicate, and delete layers freely (including down to zero).
 - Draw **markers, lines, polygons, rectangles, and circles** on whichever layer is active. Double-click a line or polygon to reshape it directly.
-- Click any item to edit its **title, description, color, line/border width, and opacity**, or move it to a different layer.
-- **Data table per layer** — open, edit any cell, add or delete columns, delete rows — like a mini spreadsheet for that layer's items.
-- **Three style modes per layer**, picked from the layer's Style panel: **Uniform** (one color/width/opacity for every item), **Individual** (style each item on its own, from its popup), or **By column** (pick one column and every unique value gets its own color+width+opacity, shown as an editable legend).
+- Click any item to edit its **title, description, color, line/border width, opacity, and line type** (solid/dashed/dotted/dash-dot), or move it to a different layer.
+- **Data table per layer** — open, edit any cell, add or delete columns, delete rows, or copy/paste a whole column (via the OS clipboard, so you can move data between columns, layers, or even a spreadsheet app).
+- **Three style modes per layer**, picked from the layer's Style panel: **Uniform** (one color/width/opacity/line-type for every item), **Individual** (style each item on its own, from its popup), or **By column** (pick one column and every unique value gets its own combined style, shown as an editable legend).
+- Click a layer's color swatch for a quick style popover — color, opacity (slider), width, and line type all in one place, editing that layer's default style.
 - Custom **color picker** with presets plus HEX/RGB/HSL entry modes.
 - **Search** for places (powered by OpenStreetMap/Nominatim) and drop a pin from the result.
 - Switch base maps: **Street, Light, Voyager, Satellite, Hybrid, Terrain, Humanitarian, Dark**.

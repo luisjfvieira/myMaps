@@ -298,10 +298,17 @@ function defaultOpacityFor(geomType) {
   return 1; // LineString and Point: fully opaque by default
 }
 
+const LINE_TYPES = { solid: null, dashed: "8,6", dotted: "2,6", dashdot: "8,4,2,4" };
+const LINE_TYPE_LABELS = { solid: "Solid", dashed: "Dashed", dotted: "Dotted", dashdot: "Dash-dot" };
+function dashArrayFor(lineType) { return LINE_TYPES[lineType] || null; }
+function lineTypeOptionsHtml(selected) {
+  return Object.keys(LINE_TYPES).map(k => `<option value="${k}" ${selected === k ? "selected" : ""}>${LINE_TYPE_LABELS[k]}</option>`).join("");
+}
+
 /* One-time migration for layers created before the unified style model
    (which had independent color/width/opacity "by field" toggles that
    could each point at a different column). Folds them into a single
-   styleField + one combined {color, weight, opacity} per value. */
+   styleField + one combined {color, weight, opacity, lineType} per value. */
 function ensureStyleMode(layer) {
   if (layer.styleMode) return;
   const legacyField = layer.colorField || layer.widthField || layer.opacityField;
@@ -318,7 +325,8 @@ function ensureStyleMode(layer) {
       layer.styleMap[v] = {
         color: (layer.colorMap && layer.colorMap[v]) || layer.color,
         weight: (layer.widthMap && layer.widthMap[v] != null) ? layer.widthMap[v] : (layer.weight != null ? layer.weight : 4),
-        opacity: (layer.opacityMap && layer.opacityMap[v] != null) ? layer.opacityMap[v] : (layer.opacity != null ? layer.opacity : 0.25)
+        opacity: (layer.opacityMap && layer.opacityMap[v] != null) ? layer.opacityMap[v] : (layer.opacity != null ? layer.opacity : 0.25),
+        lineType: "solid"
       };
     });
   } else {
@@ -331,17 +339,18 @@ function ensureStyleMode(layer) {
 
 /* Single source of truth for a feature's rendered style. Every layer is
    in exactly one mode:
-   - "uniform": every item uses the layer's own color/weight/opacity.
+   - "uniform": every item uses the layer's own color/weight/opacity/lineType.
    - "individual": each item can be styled on its own (via the popup),
-     falling back to the layer's color/weight/opacity when not set.
+     falling back to the layer's color/weight/opacity/lineType when not set.
    - "field": one column drives style; every unique value gets one
-     combined {color, weight, opacity} entry, shared by color/width/opacity. */
+     combined {color, weight, opacity, lineType} entry. */
 function resolveStyle(layer, feature) {
   ensureStyleMode(layer);
   const fallback = {
     color: layer.color,
     weight: layer.weight != null ? layer.weight : defaultWeightFor(feature.geometry.type),
-    opacity: layer.opacity != null ? layer.opacity : defaultOpacityFor(feature.geometry.type)
+    opacity: layer.opacity != null ? layer.opacity : defaultOpacityFor(feature.geometry.type),
+    lineType: layer.lineType || "solid"
   };
   if (layer.styleMode === "uniform") {
     return fallback;
@@ -353,20 +362,24 @@ function resolveStyle(layer, feature) {
       layer.styleMap[val] = {
         color: colorForIndex(Object.keys(layer.styleMap).length),
         weight: fallback.weight,
-        opacity: fallback.opacity
+        opacity: fallback.opacity,
+        lineType: fallback.lineType
       };
     }
+    if (layer.styleMap[val].lineType === undefined) layer.styleMap[val].lineType = "solid";
     return layer.styleMap[val];
   }
   // individual
   return {
     color: feature.properties.color || fallback.color,
     weight: feature.properties.weight != null ? feature.properties.weight : fallback.weight,
-    opacity: feature.properties.opacity != null ? feature.properties.opacity : fallback.opacity
+    opacity: feature.properties.opacity != null ? feature.properties.opacity : fallback.opacity,
+    lineType: feature.properties.lineType || fallback.lineType
   };
 }
 
 function featureStyle(layer, feature) { return resolveStyle(layer, feature).color; }
+function featureLineType(layer, feature) { return resolveStyle(layer, feature).lineType; }
 function featureWeight(layer, feature) { return resolveStyle(layer, feature).weight; }
 function featureOpacity(layer, feature) { return resolveStyle(layer, feature).opacity; }
 
@@ -385,14 +398,14 @@ function buildLeafletLayerForFeature(layer, feature) {
     });
   } else if (geom.type === "Circle") {
     const [lng, lat] = geom.coordinates;
-    ll = L.circle([lat, lng], { radius: geom.radius || 1000, color, weight: featureWeight(layer, feature), fillOpacity: featureOpacity(layer, feature) });
+    ll = L.circle([lat, lng], { radius: geom.radius || 1000, color, weight: featureWeight(layer, feature), fillOpacity: featureOpacity(layer, feature), dashArray: dashArrayFor(featureLineType(layer, feature)) });
     ll.on("edit", syncCircleFromLayer(feature, ll));
   } else if (geom.type === "LineString") {
     const latlngs = geom.coordinates.map(([lng, lat]) => [lat, lng]);
-    ll = L.polyline(latlngs, { color, weight: featureWeight(layer, feature), opacity: featureOpacity(layer, feature) });
+    ll = L.polyline(latlngs, { color, weight: featureWeight(layer, feature), opacity: featureOpacity(layer, feature), dashArray: dashArrayFor(featureLineType(layer, feature)) });
   } else if (geom.type === "Polygon") {
     const rings = geom.coordinates.map(ring => ring.map(([lng, lat]) => [lat, lng]));
-    ll = L.polygon(rings, { color, weight: featureWeight(layer, feature), fillOpacity: featureOpacity(layer, feature) });
+    ll = L.polygon(rings, { color, weight: featureWeight(layer, feature), fillOpacity: featureOpacity(layer, feature), dashArray: dashArrayFor(featureLineType(layer, feature)) });
   } else {
     return null;
   }
@@ -506,6 +519,9 @@ function featurePopupHtml(layer, feature) {
   const opacityControl = !canEditStyle
     ? `<div class="fp-row"><label>Opacity</label><span style="font-size:11px;color:var(--text-dim);">${styleNote}</span></div>`
     : `<div class="fp-row"><label>Opacity</label><input type="number" class="fp-opacity" min="0" max="100" step="5" value="${Math.round(featureOpacity(layer, feature) * 100)}" style="width:56px;padding:5px;border:1px solid var(--border);border-radius:4px;"><span style="font-size:11px;color:var(--text-dim);">%</span></div>`;
+  const lineTypeControl = !hasStroke ? "" : !canEditStyle
+    ? `<div class="fp-row"><label>Line type</label><span style="font-size:11px;color:var(--text-dim);">${styleNote}</span></div>`
+    : `<div class="fp-row"><label>Line type</label><select class="fp-linetype" style="flex:1;padding:5px;border:1px solid var(--border);border-radius:4px;">${lineTypeOptionsHtml(featureLineType(layer, feature))}</select></div>`;
   const customCols = layer.columns.filter(c => c !== "name" && c !== "description");
   const customFieldsHtml = customCols.map(col => `
       <div class="fp-row">
@@ -524,6 +540,7 @@ function featurePopupHtml(layer, feature) {
       </div>
       ${widthControl}
       ${opacityControl}
+      ${lineTypeControl}
       <select class="fp-move">${layerOptions}</select>
       <div class="fp-actions">
         <button class="fp-delete">Delete</button>
@@ -575,6 +592,7 @@ function wireFeaturePopup(popup, layer, feature, ll) {
 
   const weightInput = root.querySelector(".fp-weight");
   const opacityInput = root.querySelector(".fp-opacity");
+  const lineTypeInput = root.querySelector(".fp-linetype");
 
   root.querySelector(".fp-save").addEventListener("click", () => {
     feature.properties.name = root.querySelector(".fp-name").value.trim();
@@ -583,6 +601,7 @@ function wireFeaturePopup(popup, layer, feature, ll) {
     if (colorBtn) feature.properties.color = colorBtn.dataset.color;
     if (weightInput) feature.properties.weight = Math.max(1, +weightInput.value || featureWeight(layer, feature));
     if (opacityInput) feature.properties.opacity = Math.max(0, Math.min(100, +opacityInput.value)) / 100;
+    if (lineTypeInput) feature.properties.lineType = lineTypeInput.value;
 
     const newLayerId = root.querySelector(".fp-move").value;
     if (newLayerId !== layer.id) {
@@ -816,7 +835,7 @@ function renderLayerPanel() {
     });
     row.querySelector(".layer-color").addEventListener("click", (e) => {
       e.stopPropagation();
-      openColorPicker(layer.color, (c) => { layer.color = c; renderLayers(); renderLayerPanel(); persistDebounced(); }, e.currentTarget);
+      openLayerStylePopover(layer, e.currentTarget);
     });
     const nameInput = row.querySelector(".layer-name");
     nameInput.addEventListener("click", e => e.stopPropagation());
@@ -1001,6 +1020,89 @@ function openColorPicker(current, cb, anchorEl) {
   setTimeout(() => document.addEventListener("mousedown", onColorPopoverOutsideClick, true), 0);
 }
 
+let activeLayerStylePopover = null;
+
+function closeLayerStylePopover() {
+  if (activeLayerStylePopover) {
+    activeLayerStylePopover.remove();
+    activeLayerStylePopover = null;
+    document.removeEventListener("mousedown", onLayerStylePopoverOutsideClick, true);
+  }
+}
+function onLayerStylePopoverOutsideClick(e) {
+  if (activeLayerStylePopover && !activeLayerStylePopover.contains(e.target)) closeLayerStylePopover();
+}
+
+/* Quick style editor opened by clicking a layer's color swatch — color,
+   opacity (slider + live value), line/border width, and line type, all
+   in one place, editing the layer's uniform/default style. Kept as its
+   own tracked popover (separate from the plain color picker) so opening
+   the color picker from inside it doesn't close this one. */
+function openLayerStylePopover(layer, anchorEl) {
+  closeLayerStylePopover();
+  closeColorPopover();
+
+  const pop = document.createElement("div");
+  pop.className = "cp-popover layer-style-popover";
+  const color = layer.color || "#3388ff";
+  const weight = layer.weight != null ? layer.weight : 4;
+  const opacityPct = layer.opacity != null ? Math.round(layer.opacity * 100) : 25;
+  pop.innerHTML = `
+    <div class="ls-row">
+      <label>Color</label>
+      <button type="button" class="legend-swatch" id="lsColor" style="background:${color}"></button>
+    </div>
+    <div class="ls-row">
+      <label>Opacity</label>
+      <input type="range" id="lsOpacityRange" min="0" max="100" step="5" value="${opacityPct}">
+      <span id="lsOpacityVal" class="ls-val">${opacityPct}%</span>
+    </div>
+    <div class="ls-row">
+      <label>Width</label>
+      <input type="number" id="lsWidth" min="1" max="20" value="${weight}">
+      <span class="ls-val">px</span>
+    </div>
+    <div class="ls-row">
+      <label>Line type</label>
+      <select id="lsLineType">${lineTypeOptionsHtml(layer.lineType || "solid")}</select>
+    </div>`;
+  document.body.appendChild(pop);
+  activeLayerStylePopover = pop;
+
+  pop.querySelector("#lsColor").addEventListener("click", (e) => {
+    e.stopPropagation();
+    openColorPicker(layer.color || "#3388ff", (c) => {
+      layer.color = c;
+      pop.querySelector("#lsColor").style.background = c;
+      renderLayers(); renderLayerPanel(); persistDebounced();
+    }, e.currentTarget);
+  });
+  const rangeInp = pop.querySelector("#lsOpacityRange");
+  const valSpan = pop.querySelector("#lsOpacityVal");
+  rangeInp.addEventListener("input", () => {
+    valSpan.textContent = rangeInp.value + "%";
+    layer.opacity = +rangeInp.value / 100;
+    renderLayers(); persistDebounced();
+  });
+  pop.querySelector("#lsWidth").addEventListener("change", (e) => {
+    layer.weight = Math.max(1, +e.target.value || 1);
+    renderLayers(); persistDebounced();
+  });
+  pop.querySelector("#lsLineType").addEventListener("change", (e) => {
+    layer.lineType = e.target.value;
+    renderLayers(); persistDebounced();
+  });
+
+  const rect = anchorEl.getBoundingClientRect();
+  const top = Math.min(rect.bottom + 6, window.innerHeight - 220);
+  const left = Math.min(rect.left, window.innerWidth - 230);
+  pop.style.position = "fixed";
+  pop.style.top = Math.max(8, top) + "px";
+  pop.style.left = Math.max(8, left) + "px";
+
+  setTimeout(() => document.addEventListener("mousedown", onLayerStylePopoverOutsideClick, true), 0);
+}
+
 /* ---------------------------------------------------------------------
    Topbar: menu, new/open, import/export, share, base layer
 --------------------------------------------------------------------- */
@@ -1149,7 +1251,7 @@ function showLinkModal(message, url) {
 /* ---------------------------------------------------------------------
    Data table (per layer): edit values, add/delete columns & rows
 --------------------------------------------------------------------- */
-const INTERNAL_STYLE_KEYS = new Set(["color", "weight", "opacity"]);
+const INTERNAL_STYLE_KEYS = new Set(["color", "weight", "opacity", "lineType"]);
 
 function ensureLayerColumns(layer) {
   const known = new Set(layer.columns || ["name", "description"]);
@@ -1174,7 +1276,10 @@ function renderDataTable(layer) {
   let html = `<div class="dt-wrap"><table class="data-table"><thead><tr>`;
   cols.forEach(c => {
     const locked = c === "name" || c === "description";
-    html += `<th>${escapeHtml(c)}${locked ? "" : ` <button class="dt-colDel" data-col="${escapeHtml(c)}" title="Delete column">×</button>`}</th>`;
+    html += `<th>${escapeHtml(c)}
+      <button class="dt-colCopy" data-col="${escapeHtml(c)}" title="Copy column">⧉</button>
+      <button class="dt-colPaste" data-col="${escapeHtml(c)}" title="Paste into column">📥</button>
+      ${locked ? "" : `<button class="dt-colDel" data-col="${escapeHtml(c)}" title="Delete column">×</button>`}</th>`;
   });
   html += `<th></th></tr></thead><tbody>`;
   if (layer.features.length === 0) {
@@ -1211,6 +1316,39 @@ function renderDataTable(layer) {
   };
   body.querySelector("#dtAddCol").addEventListener("click", addCol);
   body.querySelector("#dtNewCol").addEventListener("keydown", (e) => { if (e.key === "Enter") addCol(); });
+
+  body.querySelectorAll(".dt-colCopy").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const col = btn.dataset.col;
+      const text = layer.features.map(f => f.properties[col] || "").join("\n");
+      try {
+        await navigator.clipboard.writeText(text);
+        toast(`Copied "${col}" (${layer.features.length} row${layer.features.length === 1 ? "" : "s"})`);
+      } catch (e) {
+        toast("Couldn't access the clipboard.");
+      }
+    });
+  });
+
+  body.querySelectorAll(".dt-colPaste").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const col = btn.dataset.col;
+      let text;
+      try {
+        text = await navigator.clipboard.readText();
+      } catch (e) {
+        toast("Couldn't read the clipboard — your browser may need permission.");
+        return;
+      }
+      const lines = text.split(/\r\n|\r|\n/);
+      layer.features.forEach((f, i) => {
+        if (i < lines.length) f.properties[col] = lines[i];
+      });
+      renderLayers(); renderLayerPanel(); persistDebounced();
+      renderDataTable(layer);
+      toast(`Pasted into "${col}" (${Math.min(lines.length, layer.features.length)} row${layer.features.length === 1 ? "" : "s"})`);
+    });
+  });
 
   body.querySelectorAll(".dt-colDel").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -1328,7 +1466,8 @@ function uniformStyleRowHtml(layer) {
       <button type="button" class="legend-swatch" id="uniformColor" style="background:${color}"></button>
       <input type="number" id="uniformWidth" class="legend-width" min="1" max="20" value="${weight}" title="Line/border width (px)">
       <input type="number" id="uniformOpacity" class="legend-opacity" min="0" max="100" step="5" value="${opacity}" title="Opacity (%)">
-      <span style="font-size:11px;color:var(--text-dim);">color · width · opacity%</span>
+      <select id="uniformLineType" class="legend-linetype" title="Line type">${lineTypeOptionsHtml(layer.lineType || "solid")}</select>
+      <span style="font-size:11px;color:var(--text-dim);">color · width · opacity% · line</span>
     </div>`;
 }
 
@@ -1348,6 +1487,10 @@ function wireUniformStyleRow(scope, layer, onChange) {
     layer.opacity = Math.max(0, Math.min(100, +e.target.value)) / 100;
     onChange();
   });
+  scope.querySelector("#uniformLineType").addEventListener("change", (e) => {
+    layer.lineType = e.target.value;
+    onChange();
+  });
 }
 
 function renderStyleFieldLegend(layer) {
@@ -1359,16 +1502,17 @@ function renderStyleFieldLegend(layer) {
   const values = new Set();
   layer.features.forEach(f => values.add(String(f.properties[layer.styleField] ?? "(blank)")));
   if (!layer.styleMap) layer.styleMap = {};
-  let html = `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">color · width · opacity% · value</div>`;
+  let html = `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">color · width · opacity% · line · value</div>`;
   Array.from(values).sort().forEach(val => {
     if (!layer.styleMap[val]) {
-      layer.styleMap[val] = { color: colorForIndex(Object.keys(layer.styleMap).length), weight: layer.weight != null ? layer.weight : 4, opacity: layer.opacity != null ? layer.opacity : 0.25 };
+      layer.styleMap[val] = { color: colorForIndex(Object.keys(layer.styleMap).length), weight: layer.weight != null ? layer.weight : 4, opacity: layer.opacity != null ? layer.opacity : 0.25, lineType: "solid" };
     }
     const s = layer.styleMap[val];
     html += `<div class="legend-row" data-val="${escapeHtml(val)}">
       <button type="button" class="legend-swatch" style="background:${s.color}"></button>
       <input type="number" class="legend-width" min="1" max="20" value="${s.weight}">
       <input type="number" class="legend-opacity" min="0" max="100" step="5" value="${Math.round(s.opacity * 100)}">
+      <select class="legend-linetype">${lineTypeOptionsHtml(s.lineType || "solid")}</select>
       <span>${escapeHtml(val)}</span>
     </div>`;
   });
@@ -1389,6 +1533,10 @@ function renderStyleFieldLegend(layer) {
     });
     row.querySelector(".legend-opacity").addEventListener("change", (e) => {
       layer.styleMap[val].opacity = Math.max(0, Math.min(100, +e.target.value)) / 100;
+      renderLayers(); persistDebounced();
+    });
+    row.querySelector(".legend-linetype").addEventListener("change", (e) => {
+      layer.styleMap[val].lineType = e.target.value;
       renderLayers(); persistDebounced();
     });
   });
