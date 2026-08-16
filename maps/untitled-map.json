@@ -1,0 +1,21 @@
+{
+  "projectName": "Untitled map",
+  "layers": [
+    {
+      "id": "id-msvw42v1-a1kmmta",
+      "name": "Untitled layer",
+      "color": "#e6194b",
+      "visible": true,
+      "features": []
+    }
+  ],
+  "activeLayerId": "id-msvw42v1-a1kmmta",
+  "view": {
+    "center": [
+      20,
+      0
+    ],
+    "zoom": 3
+  },
+  "baseLayer": "street"
+}
