@@ -135,13 +135,39 @@ function saveIndex(idx) {
   localStorage.setItem(LS_INDEX, JSON.stringify(idx));
 }
 
+function isQuotaError(e) {
+  return !!e && (e.name === "QuotaExceededError" || e.code === 22 || e.code === 1014 || e.name === "NS_ERROR_DOM_QUOTA_REACHED");
+}
+
+let warnedLocalStorageFull = false;
+function warnLocalStorageFull() {
+  if (warnedLocalStorageFull) return;
+  warnedLocalStorageFull = true;
+  // Deferred a tick so this wins over whatever routine toast (e.g. "Imported
+  // N items") the caller shows right after persist() returns — this warning
+  // matters more and shouldn't get silently clobbered by it.
+  setTimeout(() => {
+    toast("This map is too big for this browser's local storage, so it can't autosave here. Set up GitHub or Google Drive sync (File menu) so edits aren't lost, or Export as a backup.", 7000);
+  }, 50);
+}
+
+/* A huge imported map (large KML/GeoJSON) can exceed the browser's
+   localStorage quota (usually 5-10MB). Without this guard, the resulting
+   exception would abort persist() entirely — including the calls below
+   that schedule GitHub/Drive sync — so every future save would silently
+   fail from that point on, local storage or not. */
 function persist() {
   if (!projectId) return;
-  localStorage.setItem(LS_PROJECT_PREFIX + projectId, JSON.stringify(state));
-  const idx = loadIndex();
-  idx[projectId] = { name: state.projectName, updatedAt: Date.now() };
-  saveIndex(idx);
-  localStorage.setItem(LS_CURRENT, projectId);
+  try {
+    localStorage.setItem(LS_PROJECT_PREFIX + projectId, JSON.stringify(state));
+    const idx = loadIndex();
+    idx[projectId] = { name: state.projectName, updatedAt: Date.now() };
+    saveIndex(idx);
+    localStorage.setItem(LS_CURRENT, projectId);
+  } catch (e) {
+    if (isQuotaError(e)) warnLocalStorageFull();
+    else console.error(e);
+  }
   scheduleGitHubSync();
   scheduleDriveSync();
 }
@@ -235,6 +261,7 @@ function updateBaseLayerBar() {
 
 function bootMapFromState() {
   document.getElementById("projectName").value = state.projectName;
+  warnedLocalStorageFull = false;
   clearTimeout(githubSyncTimer); githubSyncTimer = null;
   setSyncStatus(getGitHubConfig() ? "synced" : "");
   clearTimeout(driveSyncTimer); driveSyncTimer = null;
@@ -1887,7 +1914,8 @@ async function syncCurrentMapToGitHub() {
       await githubPutFile("maps/index.json", JSON.stringify(index, null, 2), "Update maps index", branch, indexSha);
     }
 
-    localStorage.setItem(LS_PROJECT_PREFIX + projectId, JSON.stringify(state));
+    try { localStorage.setItem(LS_PROJECT_PREFIX + projectId, JSON.stringify(state)); }
+    catch (e) { if (isQuotaError(e)) warnLocalStorageFull(); else throw e; }
     setSyncStatus("synced");
   } catch (err) {
     console.error(err);
@@ -2184,7 +2212,8 @@ async function syncCurrentMapToDrive() {
       await driveUploadFile(folderId, "index.json", JSON.stringify(index, null, 2), indexFile ? indexFile.id : null);
     }
 
-    localStorage.setItem(LS_PROJECT_PREFIX + projectId, JSON.stringify(state));
+    try { localStorage.setItem(LS_PROJECT_PREFIX + projectId, JSON.stringify(state)); }
+    catch (e) { if (isQuotaError(e)) warnLocalStorageFull(); else throw e; }
     setDriveSyncStatus("synced");
   } catch (err) {
     console.error(err);

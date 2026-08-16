@@ -62,6 +62,7 @@ The Client ID itself isn't secret, but it's stored in this browser's localStorag
 - Maps aren't tied to a Google-style account — "saved on this device" (localStorage) and "saved to the repo" (`maps/` folder) are the two persistence options, described above.
 - The one-click **Save to repo folder…** folder picker requires a Chromium browser (Chrome/Edge); other browsers fall back to downloading the files for you to move manually.
 - Very large maps produce very long share links — prefer Export/Import or the repo folder for those.
+- **Browser local storage has a size limit** (commonly 5–10MB, varies by browser). A large imported KML/GeoJSON can exceed it — you'll get a warning telling you so, and it won't autosave locally, but the app keeps working normally and GitHub/Drive sync (which don't have this limit) still save it correctly. For maps this size, turn on GitHub or Google Drive sync rather than relying on local storage.
 
 ## Running it locally
 
