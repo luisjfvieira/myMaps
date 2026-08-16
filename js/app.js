@@ -143,6 +143,7 @@ function persist() {
   saveIndex(idx);
   localStorage.setItem(LS_CURRENT, projectId);
   scheduleGitHubSync();
+  scheduleDriveSync();
 }
 const persistDebounced = debounce(persist, 400);
 
@@ -236,6 +237,8 @@ function bootMapFromState() {
   document.getElementById("projectName").value = state.projectName;
   clearTimeout(githubSyncTimer);
   setSyncStatus(getGitHubConfig() ? "synced" : "");
+  clearTimeout(driveSyncTimer);
+  setDriveSyncStatus(getDriveConfig() ? "synced" : "");
 
   // clear existing feature layers
   Object.values(drawnLayerGroups).forEach(({ group }) => map.removeLayer(group));
@@ -1145,6 +1148,8 @@ function wireTopbar() {
   document.getElementById("btnBrowseRepo").addEventListener("click", openRepoMapsModal);
   document.getElementById("btnSaveRepo").addEventListener("click", () => saveMapToRepoFolder());
   document.getElementById("btnGitHubSync").addEventListener("click", openGitHubSettingsModal);
+  document.getElementById("btnBrowseDrive").addEventListener("click", openDriveMapsModal);
+  document.getElementById("btnDriveSync").addEventListener("click", openDriveSettingsModal);
 
   document.getElementById("btnImport").addEventListener("click", () => document.getElementById("fileImport").click());
   document.getElementById("fileImport").addEventListener("change", handleImportFile);
@@ -1652,7 +1657,42 @@ async function loadRepoMap(file) {
 
 let repoDirHandle = null;
 
+/* FileSystemHandle objects can be structured-cloned into IndexedDB, so the
+   chosen maps/ folder survives page reloads — pick it once, reuse it on
+   every later "Save to repo folder" without browsing for it again. */
+function openHandleDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("mymaps-handles", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("handles");
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function saveStoredDirHandle(handle) {
+  try {
+    const db = await openHandleDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("handles", "readwrite");
+      tx.objectStore("handles").put(handle, "mapsDir");
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (e) { console.error("Could not remember maps/ folder:", e); }
+}
+async function loadStoredDirHandle() {
+  try {
+    const db = await openHandleDB();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction("handles", "readonly");
+      const req = tx.objectStore("handles").get("mapsDir");
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) { return null; }
+}
+
 async function pickRepoDirHandle() {
+  if (!repoDirHandle) repoDirHandle = await loadStoredDirHandle();
   if (repoDirHandle) {
     try {
       if ((await repoDirHandle.queryPermission({ mode: "readwrite" })) === "granted") return repoDirHandle;
@@ -1660,6 +1700,7 @@ async function pickRepoDirHandle() {
     } catch (e) { /* handle went stale, fall through to re-pick */ }
   }
   repoDirHandle = await window.showDirectoryPicker({ id: "mymaps-repo-maps", mode: "readwrite" });
+  await saveStoredDirHandle(repoDirHandle);
   return repoDirHandle;
 }
 
@@ -1720,6 +1761,18 @@ function upsertIndexEntry(index, file, name) {
   const existing = index.find(m => m.file === file);
   if (existing) { existing.name = name; existing.updatedAt = Date.now(); }
   else index.push({ file, name, updatedAt: Date.now() });
+}
+
+/* Parses maps/index.json content defensively — if it's missing, corrupt,
+   or was somehow overwritten with something that isn't an array, treat
+   it as empty rather than letting a stray value crash the sync. */
+function parseIndexArray(text) {
+  try {
+    const data = JSON.parse(text);
+    return Array.isArray(data) ? data : [];
+  } catch (e) {
+    return [];
+  }
 }
 
 /* ---------------------------------------------------------------------
@@ -1821,7 +1874,7 @@ async function syncCurrentMapToGitHub() {
     let index = [];
     let indexSha = null;
     const indexFile = await githubGetFile("maps/index.json", branch);
-    if (indexFile) { index = JSON.parse(indexFile.content); indexSha = indexFile.sha; }
+    if (indexFile) { index = parseIndexArray(indexFile.content); indexSha = indexFile.sha; }
     const existing = index.find(m => m.file === filename);
     if (!existing || existing.name !== state.projectName) {
       upsertIndexEntry(index, filename, state.projectName);
@@ -1856,7 +1909,7 @@ async function pushAllLocalMapsToGitHub() {
   let indexSha = null;
   try {
     const indexFile = await githubGetFile("maps/index.json", branch);
-    if (indexFile) { index = JSON.parse(indexFile.content); indexSha = indexFile.sha; }
+    if (indexFile) { index = parseIndexArray(indexFile.content); indexSha = indexFile.sha; }
   } catch (e) { console.error(e); }
 
   let ok = 0, failed = 0;
@@ -1941,6 +1994,349 @@ function openGitHubSettingsModal() {
     closeModal();
     pushAllLocalMapsToGitHub();
   });
+}
+
+/* ---------------------------------------------------------------------
+   Google Drive sync — same idea as GitHub auto-sync, but backed by a
+   "My Maps Data" folder in the user's own Drive via OAuth (Google
+   Identity Services token client) instead of a pasted token. Can run
+   alongside GitHub sync; each is independent and optional.
+--------------------------------------------------------------------- */
+const LS_DRIVE = "mymaps:drive"; // { clientId, folderId }
+const DRIVE_FOLDER_NAME = "My Maps Data";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+
+function getDriveConfig() {
+  try {
+    const cfg = JSON.parse(localStorage.getItem(LS_DRIVE));
+    return (cfg && cfg.clientId) ? cfg : null;
+  } catch (e) { return null; }
+}
+function saveDriveConfig(cfg) { localStorage.setItem(LS_DRIVE, JSON.stringify(cfg)); }
+function clearDriveConfig() {
+  localStorage.removeItem(LS_DRIVE);
+  driveAccessToken = null;
+  driveTokenExpiresAt = 0;
+  driveTokenClient = null;
+}
+
+let driveTokenClient = null;
+let driveAccessToken = null;
+let driveTokenExpiresAt = 0;
+
+function requestDriveToken(tokenClient, opts) {
+  return new Promise((resolve, reject) => {
+    tokenClient.callback = (resp) => {
+      if (resp.error) reject(new Error(resp.error_description || resp.error));
+      else resolve(resp);
+    };
+    try { tokenClient.requestAccessToken(opts || {}); }
+    catch (e) { reject(e); }
+  });
+}
+
+async function ensureDriveToken() {
+  const cfg = getDriveConfig();
+  if (!cfg) throw new Error("Google Drive sync isn't set up yet.");
+  if (driveAccessToken && Date.now() < driveTokenExpiresAt - 30000) return driveAccessToken;
+  if (!window.google || !google.accounts || !google.accounts.oauth2) {
+    throw new Error("Google sign-in library hasn't loaded — check your connection and try again.");
+  }
+  if (!driveTokenClient) {
+    driveTokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: cfg.clientId,
+      scope: DRIVE_SCOPE,
+      callback: () => {}
+    });
+  }
+  const resp = await requestDriveToken(driveTokenClient, { prompt: "" });
+  driveAccessToken = resp.access_token;
+  driveTokenExpiresAt = Date.now() + (resp.expires_in * 1000);
+  return driveAccessToken;
+}
+
+async function driveApi(path, options) {
+  const token = await ensureDriveToken();
+  return fetch(`https://www.googleapis.com/drive/v3/${path}`, Object.assign({
+    headers: Object.assign({ "Authorization": `Bearer ${token}` }, (options && options.headers) || {})
+  }, options || {}));
+}
+
+async function driveFindOrCreateFolder() {
+  const cfg = getDriveConfig();
+  if (cfg.folderId) {
+    const res = await driveApi(`files/${cfg.folderId}?fields=id,trashed`);
+    if (res.ok) {
+      const data = await res.json();
+      if (!data.trashed) return cfg.folderId;
+    }
+  }
+  const q = encodeURIComponent(`name='${DRIVE_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  const searchRes = await driveApi(`files?q=${q}&fields=files(id,name)`);
+  if (!searchRes.ok) throw new Error(`Drive folder search failed (${searchRes.status})`);
+  const searchData = await searchRes.json();
+  let folderId;
+  if (searchData.files && searchData.files.length) {
+    folderId = searchData.files[0].id;
+  } else {
+    const createRes = await driveApi(`files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: DRIVE_FOLDER_NAME, mimeType: "application/vnd.google-apps.folder" })
+    });
+    if (!createRes.ok) throw new Error(`Couldn't create Drive folder (${createRes.status})`);
+    folderId = (await createRes.json()).id;
+  }
+  cfg.folderId = folderId;
+  saveDriveConfig(cfg);
+  return folderId;
+}
+
+async function driveFindFile(folderId, name) {
+  const escaped = name.replace(/'/g, "\\'");
+  const q = encodeURIComponent(`name='${escaped}' and '${folderId}' in parents and trashed=false`);
+  const res = await driveApi(`files?q=${q}&fields=files(id,name)`);
+  if (!res.ok) throw new Error(`Drive file search failed (${res.status})`);
+  const data = await res.json();
+  return (data.files && data.files[0]) || null;
+}
+
+async function driveReadFile(fileId) {
+  const res = await driveApi(`files/${fileId}?alt=media`);
+  if (!res.ok) throw new Error(`Drive read failed (${res.status})`);
+  return res.text();
+}
+
+async function driveUploadFile(folderId, name, content, existingFileId) {
+  const token = await ensureDriveToken();
+  const metadata = existingFileId ? { name } : { name, parents: [folderId] };
+  const boundary = "mymaps-" + Math.random().toString(36).slice(2);
+  const body =
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n` +
+    `--${boundary}--`;
+  const url = existingFileId
+    ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`
+    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+  const res = await fetch(url, {
+    method: existingFileId ? "PATCH" : "POST",
+    headers: { "Authorization": `Bearer ${token}`, "Content-Type": `multipart/related; boundary=${boundary}` },
+    body
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err.error && err.error.message) || `Drive upload failed (${res.status})`);
+  }
+  return res.json();
+}
+
+function setDriveSyncStatus(kind, detail) {
+  const el = document.getElementById("driveSyncStatus");
+  if (!el) return;
+  if (!getDriveConfig()) { el.textContent = ""; el.className = "sync-status"; el.title = ""; return; }
+  const labels = {
+    pending: "🗂 pending…",
+    syncing: "🗂 syncing…",
+    synced: "🗂 synced " + new Date().toLocaleTimeString(),
+    error: "🗂 sync failed"
+  };
+  el.textContent = labels[kind] || "";
+  el.className = "sync-status " + kind;
+  el.title = kind === "error" ? (detail || "Drive sync failed — click File > Google Drive sync settings.") : "";
+}
+
+let driveSyncTimer = null;
+let driveSyncing = false;
+
+function scheduleDriveSync() {
+  if (!getDriveConfig()) return;
+  clearTimeout(driveSyncTimer);
+  setDriveSyncStatus("pending");
+  driveSyncTimer = setTimeout(syncCurrentMapToDrive, GITHUB_SYNC_DELAY);
+}
+
+async function syncCurrentMapToDrive() {
+  const cfg = getDriveConfig();
+  if (!cfg || driveSyncing || !state) return;
+  driveSyncing = true;
+  setDriveSyncStatus("syncing");
+  try {
+    const folderId = await driveFindOrCreateFolder();
+    const filename = state.driveFile || slugify(state.projectName);
+    const existing = await driveFindFile(folderId, filename);
+    await driveUploadFile(folderId, filename, JSON.stringify(state, null, 2), existing ? existing.id : null);
+    state.driveFile = filename;
+
+    const indexFile = await driveFindFile(folderId, "index.json");
+    let index = [];
+    if (indexFile) index = parseIndexArray(await driveReadFile(indexFile.id));
+    const existingEntry = index.find(m => m.file === filename);
+    if (!existingEntry || existingEntry.name !== state.projectName) {
+      upsertIndexEntry(index, filename, state.projectName);
+      await driveUploadFile(folderId, "index.json", JSON.stringify(index, null, 2), indexFile ? indexFile.id : null);
+    }
+
+    localStorage.setItem(LS_PROJECT_PREFIX + projectId, JSON.stringify(state));
+    setDriveSyncStatus("synced");
+  } catch (err) {
+    console.error(err);
+    setDriveSyncStatus("error", err.message);
+  } finally {
+    driveSyncing = false;
+  }
+}
+
+async function pushAllLocalMapsToDrive() {
+  const cfg = getDriveConfig();
+  if (!cfg) { toast("Set up Google Drive sync first."); return; }
+  const idx = loadIndex();
+  const ids = Object.keys(idx);
+  if (!ids.length) { toast("No local maps to push."); return; }
+  toast(`Pushing ${ids.length} map(s) to Google Drive…`);
+  try {
+    const folderId = await driveFindOrCreateFolder();
+    const indexFile = await driveFindFile(folderId, "index.json");
+    let index = [];
+    if (indexFile) index = parseIndexArray(await driveReadFile(indexFile.id));
+    let ok = 0, failed = 0;
+    for (const id of ids) {
+      const proj = loadProject(id);
+      if (!proj) continue;
+      const filename = proj.driveFile || slugify(proj.projectName);
+      try {
+        const existing = await driveFindFile(folderId, filename);
+        await driveUploadFile(folderId, filename, JSON.stringify(proj, null, 2), existing ? existing.id : null);
+        proj.driveFile = filename;
+        localStorage.setItem(LS_PROJECT_PREFIX + id, JSON.stringify(proj));
+        upsertIndexEntry(index, filename, proj.projectName);
+        ok++;
+      } catch (err) {
+        console.error(`Failed to push "${proj.projectName}" to Drive`, err);
+        failed++;
+      }
+    }
+    await driveUploadFile(folderId, "index.json", JSON.stringify(index, null, 2), indexFile ? indexFile.id : null);
+    toast(failed ? `Pushed ${ok} map(s) to Drive, ${failed} failed — check console.` : `Pushed ${ok} map(s) to Google Drive.`);
+  } catch (err) {
+    console.error(err);
+    toast("Could not push to Google Drive: " + err.message);
+  }
+}
+
+function openDriveSettingsModal() {
+  setModalWide(false);
+  const cfg = getDriveConfig() || {};
+  document.getElementById("modalTitle").textContent = "Google Drive sync";
+  document.getElementById("modalBody").innerHTML = `
+    <p style="margin:0 0 12px;font-size:12px;color:var(--text-dim);line-height:1.5;">
+      Once connected, the map you have open is saved into a "${DRIVE_FOLDER_NAME}" folder in your Google Drive
+      automatically, a few seconds after you stop editing. You'll need a free Google OAuth Client ID first:
+      at <b>console.cloud.google.com</b>, create a project, then <b>APIs &amp; Services &gt; Credentials &gt;
+      Create Credentials &gt; OAuth client ID &gt; Web application</b>, and add this page's URL under
+      "Authorized JavaScript origins". No client secret needed — only the Client ID goes here.
+    </p>
+    <label style="font-size:12px;color:var(--text-dim);">OAuth Client ID</label>
+    <input type="text" id="gdClientId" placeholder="xxxxxxxxxx.apps.googleusercontent.com" value="${escapeHtml(cfg.clientId || "")}" style="width:100%;padding:7px;margin:4px 0 14px;border:1px solid var(--border);border-radius:4px;box-sizing:border-box;">
+    <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;flex-wrap:wrap;">
+      <button class="small-btn danger" id="gdDisable">Turn off sync</button>
+      <div style="display:flex;gap:8px;">
+        <button class="small-btn secondary" id="gdPushAll">Push all local maps now</button>
+        <button class="small-btn" id="gdConnect">Save &amp; Connect</button>
+      </div>
+    </div>`;
+  document.getElementById("modalOverlay").classList.add("open");
+
+  document.getElementById("gdConnect").addEventListener("click", async () => {
+    const clientId = document.getElementById("gdClientId").value.trim();
+    if (!clientId) { toast("Client ID is required."); return; }
+    saveDriveConfig(Object.assign(getDriveConfig() || {}, { clientId }));
+    driveTokenClient = null;
+    try {
+      await ensureDriveToken();
+      closeModal();
+      setDriveSyncStatus("pending");
+      toast("Connected to Google Drive.");
+      scheduleDriveSync();
+    } catch (err) {
+      console.error(err);
+      toast("Could not connect: " + err.message);
+    }
+  });
+  document.getElementById("gdDisable").addEventListener("click", () => {
+    clearDriveConfig();
+    clearTimeout(driveSyncTimer);
+    setDriveSyncStatus("");
+    closeModal();
+    toast("Google Drive sync turned off.");
+  });
+  document.getElementById("gdPushAll").addEventListener("click", () => {
+    const clientId = document.getElementById("gdClientId").value.trim();
+    if (!clientId) { toast("Client ID is required."); return; }
+    saveDriveConfig(Object.assign(getDriveConfig() || {}, { clientId }));
+    driveTokenClient = null;
+    closeModal();
+    pushAllLocalMapsToDrive();
+  });
+}
+
+function openDriveMapsModal() {
+  setModalWide(false);
+  document.getElementById("modalTitle").textContent = "Browse Google Drive maps";
+  const body = document.getElementById("modalBody");
+  const cfg = getDriveConfig();
+  if (!cfg) {
+    body.innerHTML = `<p style="font-size:13px;color:var(--text-dim);">Set up Google Drive sync first (File &gt; Google Drive sync settings…).</p>`;
+    document.getElementById("modalOverlay").classList.add("open");
+    return;
+  }
+  body.innerHTML = `<p style="font-size:13px;color:var(--text-dim);">Loading…</p>`;
+  document.getElementById("modalOverlay").classList.add("open");
+
+  (async () => {
+    try {
+      const folderId = await driveFindOrCreateFolder();
+      const indexFile = await driveFindFile(folderId, "index.json");
+      const entries = indexFile ? parseIndexArray(await driveReadFile(indexFile.id)) : [];
+      if (!entries.length) {
+        body.innerHTML = `<p style="font-size:13px;color:var(--text-dim);">No maps saved to Drive yet.</p>`;
+        return;
+      }
+      const sorted = entries.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      body.innerHTML = sorted.map(m => `
+        <div class="map-list-item" data-file="${escapeHtml(m.file)}">
+          <div class="mli-info">
+            <div class="mli-name">${escapeHtml(m.name || m.file)}</div>
+            <div class="mli-meta">${m.updatedAt ? "Updated " + new Date(m.updatedAt).toLocaleString() : escapeHtml(m.file)}</div>
+          </div>
+        </div>`).join("");
+      body.querySelectorAll(".map-list-item").forEach(row => {
+        row.querySelector(".mli-info").addEventListener("click", () => loadDriveMap(row.dataset.file, folderId));
+      });
+    } catch (err) {
+      console.error(err);
+      body.innerHTML = `<p style="font-size:13px;color:var(--text-dim);">Could not load Drive maps: ${escapeHtml(err.message)}</p>`;
+    }
+  })();
+}
+
+async function loadDriveMap(filename, folderId) {
+  try {
+    const file = await driveFindFile(folderId, filename);
+    if (!file) throw new Error("File not found");
+    const text = await driveReadFile(file.id);
+    const loaded = JSON.parse(text);
+    if (!loaded || !loaded.layers) throw new Error("Invalid map file");
+    projectId = uid();
+    state = loaded;
+    state.driveFile = filename;
+    persist();
+    bootMapFromState();
+    closeModal();
+    toast(`Opened "${state.projectName}" from Google Drive`);
+  } catch (err) {
+    console.error(err);
+    toast("Could not load that map from Drive.");
+  }
 }
 
 /* ---------------------------------------------------------------------

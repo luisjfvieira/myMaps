@@ -17,6 +17,7 @@ A self-hosted clone of Google My Maps — draw markers, lines, and shapes across
 - **Multiple saved maps** — your work autosaves in the browser (localStorage); use **File > Open map (this browser)** to switch between maps saved on this device.
 - **Repo-backed map gallery** — use **File > Save to repo folder…** to write the current map into this project's `maps/` folder, then commit & push with GitHub Desktop. Anyone visiting the published site (including you, on any device) can then use **File > Browse repo maps…** to see and open every map that's been saved that way — a real "My Maps" list, backed by files in your repo instead of one browser's storage.
 - **GitHub auto-sync** — set up a personal access token once (**File > GitHub auto-sync settings…**) and the open map commits itself to `maps/` in your repo automatically as you edit, no GitHub Desktop step required.
+- **Google Drive auto-sync** — an independent, optional second backend: connect a Google account (**File > Google Drive sync settings…**) and the open map saves itself into a "My Maps Data" folder in your Drive automatically as you edit. Can run at the same time as GitHub sync — each is its own on/off switch, and a save pushes to whichever you've turned on.
 - **Share link** — generates a URL with the whole map packed into it, so someone else can open it in their own browser (no account or server required).
 
 ## Switching between maps
@@ -27,7 +28,7 @@ A self-hosted clone of Google My Maps — draw markers, lines, and shapes across
 ## Saving a map into the repo
 
 1. With the map open, choose **File > Save to repo folder…**.
-2. In Chrome or Edge, a folder picker opens — select this project's `maps` folder (the browser will remember it for next time). The app writes `maps/<your-map-name>.json` and updates `maps/index.json` directly in your working copy.
+2. In Chrome or Edge, a folder picker opens the first time — select this project's `maps` folder. After that, the app remembers that exact folder (it's stored in this browser, not just this tab) and reuses it automatically on every later save, with no picker and usually no prompt at all. The app writes `maps/<your-map-name>.json` and updates `maps/index.json` directly in your working copy.
    - In Firefox/Safari (no folder-picker support), it instead downloads `<your-map-name>.json` and `index.json` — drag both into the `maps/` folder yourself.
 3. Open **GitHub Desktop** — you'll see the new/changed files under `maps/`. Commit and push.
 4. Once GitHub Pages redeploys (usually under a minute), the map appears for anyone using **Browse repo maps…** on the live site.
@@ -42,6 +43,18 @@ Deleting a map from the gallery is manual: delete its file from `maps/`, remove 
 4. From then on, edits to the open map are committed straight to `maps/` in your repo a few seconds after you stop editing — watch the status badge next to the map name (`☁ pending…` → `☁ syncing…` → `☁ synced`). **Push all local maps now** in that same dialog does a one-time bulk push of every map already saved in this browser.
 
 The token is stored only in this browser's localStorage — only enable this on a device you trust, and revoke the token on GitHub any time to turn it off remotely.
+
+## Google Drive auto-sync
+
+Independent of GitHub sync — turn on one, the other, or both. Setup needs a one-time Google OAuth Client ID (free, a few minutes):
+
+1. At [console.cloud.google.com](https://console.cloud.google.com), create a project (or reuse one), then **APIs & Services > Credentials > Create Credentials > OAuth client ID > Web application**.
+2. Under "Authorized JavaScript origins", add the URL(s) you'll use the app from (e.g. `https://<your-username>.github.io` and `http://localhost:5500` for local testing).
+3. Copy the generated Client ID (looks like `xxxxxxxxxx.apps.googleusercontent.com`) — no client secret is needed for this.
+4. In the app: **File > Google Drive sync settings…**, paste the Client ID, **Save & Connect**, and sign in with the Google account you want to save to.
+5. From then on, edits to the open map are saved into a **"My Maps Data"** folder in that Drive account a few seconds after you stop editing — watch the second status badge next to the map name (`🗂 pending…` → `🗂 syncing…` → `🗂 synced`). **Push all local maps now** does a one-time bulk push of every map already saved in this browser. **File > Browse Google Drive maps…** lists and opens anything saved there.
+
+The Client ID itself isn't secret, but it's stored in this browser's localStorage alongside a short-lived Google access token; the underlying Drive access only ever covers files this app created (the `drive.file` scope), not your whole Drive.
 
 ## Limitations vs. Google My Maps
 

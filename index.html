@@ -28,6 +28,9 @@
         <button id="btnSaveRepo">Save to repo folder…</button>
         <button id="btnGitHubSync">GitHub auto-sync settings…</button>
         <hr>
+        <button id="btnBrowseDrive">Browse Google Drive maps…</button>
+        <button id="btnDriveSync">Google Drive sync settings…</button>
+        <hr>
         <button id="btnImport">Import GeoJSON / KML</button>
         <button id="btnExportGeoJSON">Export as GeoJSON</button>
         <button id="btnExportKML">Export as KML</button>
@@ -37,6 +40,7 @@
     </div>
     <input type="file" id="fileImport" accept=".json,.geojson,.kml" style="display:none">
     <span id="githubSyncStatus" class="sync-status"></span>
+    <span id="driveSyncStatus" class="sync-status"></span>
 
     <div class="search-wrap">
       <input id="searchBox" type="text" placeholder="Search for a place…" autocomplete="off">
@@ -105,6 +109,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="js/app.js"></script>
 </body>
 </html>
