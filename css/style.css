@@ -203,9 +203,9 @@ html,body{height:100%;margin:0;padding:0;font-family:-apple-system,BlinkMacSyste
 
 /* Base map switcher */
 .base-layer-bar{
-  position:absolute;bottom:24px;left:12px;z-index:900;
+  position:absolute;bottom:24px;left:12px;right:12px;z-index:900;
   background:#fff;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.3);
-  display:flex;padding:3px;gap:2px;
+  display:flex;flex-wrap:wrap;padding:3px;gap:2px;width:max-content;max-width:calc(100% - 24px);
 }
 .bl-btn{
   border:none;background:none;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;color:var(--text);white-space:nowrap;
@@ -245,8 +245,18 @@ html,body{height:100%;margin:0;padding:0;font-family:-apple-system,BlinkMacSyste
 
 /* Layer style / data-table triggers */
 .legend-row{display:flex;align-items:center;gap:8px;padding:5px 2px;font-size:13px;}
+
+.style-mode-picker{display:flex;gap:4px;border:1px solid var(--border);border-radius:6px;padding:3px;}
+.style-mode-btn{
+  flex:1;background:none;border:none;border-radius:4px;padding:7px 6px;font-size:12px;cursor:pointer;color:var(--text-dim);
+}
+.style-mode-btn:hover{background:#f1f3f4;}
+.style-mode-btn.active{background:var(--accent);color:#fff;}
 .legend-swatch{
   width:16px;height:16px;border-radius:50%;border:1px solid rgba(0,0,0,.2);cursor:pointer;flex:0 0 auto;padding:0;
+}
+.legend-width, .legend-opacity{
+  width:48px;padding:4px;border:1px solid var(--border);border-radius:4px;font-size:12px;flex:0 0 auto;
 }
 
 /* Data table */

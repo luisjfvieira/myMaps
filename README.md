@@ -4,15 +4,18 @@ A self-hosted clone of Google My Maps — draw markers, lines, and shapes across
 
 ## Features
 
-- **Unlimited layers** — add, rename, recolor, reorder, duplicate, and delete layers freely.
-- Draw **markers, lines, polygons, rectangles, and circles** on whichever layer is active.
-- Click any item to edit its **title, description, color**, or move it to a different layer.
-- Drag markers to reposition; use "Edit shape" to reshape lines/polygons.
+- **Unlimited layers** — add, rename, recolor, reorder, duplicate, and delete layers freely (including down to zero).
+- Draw **markers, lines, polygons, rectangles, and circles** on whichever layer is active. Double-click a line or polygon to reshape it directly.
+- Click any item to edit its **title, description, color, line/border width, and opacity**, or move it to a different layer.
+- **Data table per layer** — open, edit any cell, add or delete columns, delete rows — like a mini spreadsheet for that layer's items.
+- **Three style modes per layer**, picked from the layer's Style panel: **Uniform** (one color/width/opacity for every item), **Individual** (style each item on its own, from its popup), or **By column** (pick one column and every unique value gets its own color+width+opacity, shown as an editable legend).
+- Custom **color picker** with presets plus HEX/RGB/HSL entry modes.
 - **Search** for places (powered by OpenStreetMap/Nominatim) and drop a pin from the result.
-- Switch base maps: **Street, Satellite, Terrain, Dark**.
-- **Import** GeoJSON or KML files; **export** your map as GeoJSON or KML (compatible with Google Earth / My Maps import).
+- Switch base maps: **Street, Light, Voyager, Satellite, Hybrid, Terrain, Humanitarian, Dark**.
+- **Import** GeoJSON or KML files (including extra columns from `<ExtendedData>`); **export** your map as GeoJSON or KML (compatible with Google Earth / My Maps import).
 - **Multiple saved maps** — your work autosaves in the browser (localStorage); use **File > Open map (this browser)** to switch between maps saved on this device.
 - **Repo-backed map gallery** — use **File > Save to repo folder…** to write the current map into this project's `maps/` folder, then commit & push with GitHub Desktop. Anyone visiting the published site (including you, on any device) can then use **File > Browse repo maps…** to see and open every map that's been saved that way — a real "My Maps" list, backed by files in your repo instead of one browser's storage.
+- **GitHub auto-sync** — set up a personal access token once (**File > GitHub auto-sync settings…**) and the open map commits itself to `maps/` in your repo automatically as you edit, no GitHub Desktop step required.
 - **Share link** — generates a URL with the whole map packed into it, so someone else can open it in their own browser (no account or server required).
 
 ## Switching between maps
@@ -29,6 +32,15 @@ A self-hosted clone of Google My Maps — draw markers, lines, and shapes across
 4. Once GitHub Pages redeploys (usually under a minute), the map appears for anyone using **Browse repo maps…** on the live site.
 
 Deleting a map from the gallery is manual: delete its file from `maps/`, remove its entry from `maps/index.json`, then commit & push.
+
+## GitHub auto-sync (no GitHub Desktop step)
+
+1. **File > GitHub auto-sync settings…**
+2. Create a token at `github.com/settings/tokens` — a classic token with the `repo` scope, or a fine-grained token with **Contents: Read and write** on this repo.
+3. Enter `owner/repo`, the branch (usually `main`), and the token, then Save.
+4. From then on, edits to the open map are committed straight to `maps/` in your repo a few seconds after you stop editing — watch the status badge next to the map name (`☁ pending…` → `☁ syncing…` → `☁ synced`). **Push all local maps now** in that same dialog does a one-time bulk push of every map already saved in this browser.
+
+The token is stored only in this browser's localStorage — only enable this on a device you trust, and revoke the token on GitHub any time to turn it off remotely.
 
 ## Limitations vs. Google My Maps
 

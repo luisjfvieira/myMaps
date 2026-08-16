@@ -191,6 +191,18 @@ function initLeaflet() {
     maxZoom: 19,
     attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
   });
+  baseLayers.light = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+  });
+  baseLayers.voyager = L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+  });
+  baseLayers.humanitarian = L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors, Tiles style by Humanitarian OSM Team'
+  });
   baseLayers.hybrid = L.layerGroup([
     L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -274,17 +286,89 @@ function ensureLayerGroup(layerId) {
   return drawnLayerGroups[layerId];
 }
 
-function featureStyle(layer, feature) {
-  if (layer.colorField) {
-    const val = String(feature.properties[layer.colorField] ?? "");
-    if (!layer.colorMap) layer.colorMap = {};
-    if (!layer.colorMap[val]) {
-      layer.colorMap[val] = colorForIndex(Object.keys(layer.colorMap).length);
-    }
-    return layer.colorMap[val];
-  }
-  return feature.properties.color || layer.color;
+function defaultWeightFor(geomType) {
+  if (geomType === "Polygon") return 3;
+  if (geomType === "Circle") return 2;
+  return 4; // LineString
 }
+
+function defaultOpacityFor(geomType) {
+  if (geomType === "Polygon") return 0.25;
+  if (geomType === "Circle") return 0.2;
+  return 1; // LineString and Point: fully opaque by default
+}
+
+/* One-time migration for layers created before the unified style model
+   (which had independent color/width/opacity "by field" toggles that
+   could each point at a different column). Folds them into a single
+   styleField + one combined {color, weight, opacity} per value. */
+function ensureStyleMode(layer) {
+  if (layer.styleMode) return;
+  const legacyField = layer.colorField || layer.widthField || layer.opacityField;
+  if (legacyField) {
+    layer.styleMode = "field";
+    layer.styleField = legacyField;
+    const values = new Set([
+      ...Object.keys(layer.colorMap || {}),
+      ...Object.keys(layer.widthMap || {}),
+      ...Object.keys(layer.opacityMap || {})
+    ]);
+    layer.styleMap = {};
+    values.forEach(v => {
+      layer.styleMap[v] = {
+        color: (layer.colorMap && layer.colorMap[v]) || layer.color,
+        weight: (layer.widthMap && layer.widthMap[v] != null) ? layer.widthMap[v] : (layer.weight != null ? layer.weight : 4),
+        opacity: (layer.opacityMap && layer.opacityMap[v] != null) ? layer.opacityMap[v] : (layer.opacity != null ? layer.opacity : 0.25)
+      };
+    });
+  } else {
+    layer.styleMode = "individual";
+  }
+  delete layer.colorField; delete layer.colorMap;
+  delete layer.widthField; delete layer.widthMap;
+  delete layer.opacityField; delete layer.opacityMap;
+}
+
+/* Single source of truth for a feature's rendered style. Every layer is
+   in exactly one mode:
+   - "uniform": every item uses the layer's own color/weight/opacity.
+   - "individual": each item can be styled on its own (via the popup),
+     falling back to the layer's color/weight/opacity when not set.
+   - "field": one column drives style; every unique value gets one
+     combined {color, weight, opacity} entry, shared by color/width/opacity. */
+function resolveStyle(layer, feature) {
+  ensureStyleMode(layer);
+  const fallback = {
+    color: layer.color,
+    weight: layer.weight != null ? layer.weight : defaultWeightFor(feature.geometry.type),
+    opacity: layer.opacity != null ? layer.opacity : defaultOpacityFor(feature.geometry.type)
+  };
+  if (layer.styleMode === "uniform") {
+    return fallback;
+  }
+  if (layer.styleMode === "field" && layer.styleField) {
+    const val = String(feature.properties[layer.styleField] ?? "");
+    if (!layer.styleMap) layer.styleMap = {};
+    if (!layer.styleMap[val]) {
+      layer.styleMap[val] = {
+        color: colorForIndex(Object.keys(layer.styleMap).length),
+        weight: fallback.weight,
+        opacity: fallback.opacity
+      };
+    }
+    return layer.styleMap[val];
+  }
+  // individual
+  return {
+    color: feature.properties.color || fallback.color,
+    weight: feature.properties.weight != null ? feature.properties.weight : fallback.weight,
+    opacity: feature.properties.opacity != null ? feature.properties.opacity : fallback.opacity
+  };
+}
+
+function featureStyle(layer, feature) { return resolveStyle(layer, feature).color; }
+function featureWeight(layer, feature) { return resolveStyle(layer, feature).weight; }
+function featureOpacity(layer, feature) { return resolveStyle(layer, feature).opacity; }
 
 function buildLeafletLayerForFeature(layer, feature) {
   const color = featureStyle(layer, feature);
@@ -293,7 +377,7 @@ function buildLeafletLayerForFeature(layer, feature) {
 
   if (geom.type === "Point") {
     const [lng, lat] = geom.coordinates;
-    ll = L.marker([lat, lng], { icon: pinIcon(color), draggable: true });
+    ll = L.marker([lat, lng], { icon: pinIcon(color), draggable: true, opacity: featureOpacity(layer, feature) });
     ll.on("dragend", () => {
       const p = ll.getLatLng();
       feature.geometry.coordinates = [p.lng, p.lat];
@@ -301,14 +385,14 @@ function buildLeafletLayerForFeature(layer, feature) {
     });
   } else if (geom.type === "Circle") {
     const [lng, lat] = geom.coordinates;
-    ll = L.circle([lat, lng], { radius: geom.radius || 1000, color, weight: 2, fillOpacity: 0.2 });
+    ll = L.circle([lat, lng], { radius: geom.radius || 1000, color, weight: featureWeight(layer, feature), fillOpacity: featureOpacity(layer, feature) });
     ll.on("edit", syncCircleFromLayer(feature, ll));
   } else if (geom.type === "LineString") {
     const latlngs = geom.coordinates.map(([lng, lat]) => [lat, lng]);
-    ll = L.polyline(latlngs, { color, weight: 4 });
+    ll = L.polyline(latlngs, { color, weight: featureWeight(layer, feature), opacity: featureOpacity(layer, feature) });
   } else if (geom.type === "Polygon") {
     const rings = geom.coordinates.map(ring => ring.map(([lng, lat]) => [lat, lng]));
-    ll = L.polygon(rings, { color, weight: 3, fillOpacity: 0.25 });
+    ll = L.polygon(rings, { color, weight: featureWeight(layer, feature), fillOpacity: featureOpacity(layer, feature) });
   } else {
     return null;
   }
@@ -401,23 +485,45 @@ function getFeature(layerId, featureId) {
    Feature popup (edit name/description/color/move-layer/delete)
 --------------------------------------------------------------------- */
 function featurePopupHtml(layer, feature) {
+  ensureLayerColumns(layer);
+  ensureStyleMode(layer);
   const layerOptions = state.layers.map(l =>
     `<option value="${l.id}" ${l.id === layer.id ? "selected" : ""}>${escapeHtml(l.name)}</option>`
   ).join("");
   const isShape = feature.geometry.type === "LineString" || feature.geometry.type === "Polygon";
+  const hasStroke = feature.geometry.type !== "Point";
+  const canEditStyle = layer.styleMode === "individual";
+  const styleNote = layer.styleMode === "uniform"
+    ? `set by this layer's style`
+    : `set by field "${escapeHtml(layer.styleField || "")}"`;
   const startColor = toHexColor(featureStyle(layer, feature));
-  const colorControl = layer.colorField
-    ? `<span style="font-size:11px;color:var(--text-dim);">set by field "${escapeHtml(layer.colorField)}"</span>`
+  const colorControl = !canEditStyle
+    ? `<span style="font-size:11px;color:var(--text-dim);">${styleNote}</span>`
     : `<button type="button" class="fp-color-btn" data-color="${startColor}" style="background:${startColor}" title="Pick color"></button>`;
+  const widthControl = !hasStroke ? "" : !canEditStyle
+    ? `<div class="fp-row"><label>Width</label><span style="font-size:11px;color:var(--text-dim);">${styleNote}</span></div>`
+    : `<div class="fp-row"><label>Width</label><input type="number" class="fp-weight" min="1" max="20" value="${featureWeight(layer, feature)}" style="width:56px;padding:5px;border:1px solid var(--border);border-radius:4px;"></div>`;
+  const opacityControl = !canEditStyle
+    ? `<div class="fp-row"><label>Opacity</label><span style="font-size:11px;color:var(--text-dim);">${styleNote}</span></div>`
+    : `<div class="fp-row"><label>Opacity</label><input type="number" class="fp-opacity" min="0" max="100" step="5" value="${Math.round(featureOpacity(layer, feature) * 100)}" style="width:56px;padding:5px;border:1px solid var(--border);border-radius:4px;"><span style="font-size:11px;color:var(--text-dim);">%</span></div>`;
+  const customCols = layer.columns.filter(c => c !== "name" && c !== "description");
+  const customFieldsHtml = customCols.map(col => `
+      <div class="fp-row">
+        <label style="white-space:nowrap;">${escapeHtml(col)}</label>
+        <input type="text" class="fp-field" data-col="${escapeHtml(col)}" value="${escapeHtml(feature.properties[col] || "")}" style="flex:1;min-width:0;padding:5px;border:1px solid var(--border);border-radius:4px;">
+      </div>`).join("");
   return `
     <div class="fp-editor" data-layer="${layer.id}" data-feature="${feature.id}">
       <input type="text" class="fp-name" placeholder="Title" value="${escapeHtml(feature.properties.name || "")}">
       <textarea class="fp-desc" placeholder="Description">${escapeHtml(feature.properties.description || "")}</textarea>
+      ${customFieldsHtml}
       <div class="fp-row">
         <label>Color</label>
         ${colorControl}
         ${isShape ? `<button class="fp-editshape" style="margin-left:auto;font-size:11px;">Edit shape</button>` : ""}
       </div>
+      ${widthControl}
+      ${opacityControl}
       <select class="fp-move">${layerOptions}</select>
       <div class="fp-actions">
         <button class="fp-delete">Delete</button>
@@ -467,10 +573,16 @@ function wireFeaturePopup(popup, layer, feature, ll) {
     });
   }
 
+  const weightInput = root.querySelector(".fp-weight");
+  const opacityInput = root.querySelector(".fp-opacity");
+
   root.querySelector(".fp-save").addEventListener("click", () => {
     feature.properties.name = root.querySelector(".fp-name").value.trim();
     feature.properties.description = root.querySelector(".fp-desc").value;
+    root.querySelectorAll(".fp-field").forEach(inp => { feature.properties[inp.dataset.col] = inp.value; });
     if (colorBtn) feature.properties.color = colorBtn.dataset.color;
+    if (weightInput) feature.properties.weight = Math.max(1, +weightInput.value || featureWeight(layer, feature));
+    if (opacityInput) feature.properties.opacity = Math.max(0, Math.min(100, +opacityInput.value)) / 100;
 
     const newLayerId = root.querySelector(".fp-move").value;
     if (newLayerId !== layer.id) {
@@ -518,12 +630,18 @@ function onMapClickForCircle() {}
 /* ---------------------------------------------------------------------
    Drawing tools
 --------------------------------------------------------------------- */
+function activeLayerWeight(geomType) {
+  const layer = getLayer(state.activeLayerId);
+  if (layer && layer.weight != null) return layer.weight;
+  return defaultWeightFor(geomType);
+}
+
 const DRAW_HANDLERS = {
   marker: () => new L.Draw.Marker(map, { icon: L.divIcon({ className: "pin-icon", html: "", iconSize: [0,0] }) }),
-  polyline: () => new L.Draw.Polyline(map, { shapeOptions: { color: "#3388ff", weight: 4 } }),
-  polygon: () => new L.Draw.Polygon(map, { shapeOptions: { color: "#3388ff", weight: 3 }, allowIntersection: true }),
-  rectangle: () => new L.Draw.Rectangle(map, { shapeOptions: { color: "#3388ff", weight: 3 } }),
-  circle: () => new L.Draw.Circle(map, { shapeOptions: { color: "#3388ff", weight: 3 } })
+  polyline: () => new L.Draw.Polyline(map, { shapeOptions: { color: "#3388ff", weight: activeLayerWeight("LineString") } }),
+  polygon: () => new L.Draw.Polygon(map, { shapeOptions: { color: "#3388ff", weight: activeLayerWeight("Polygon") }, allowIntersection: true }),
+  rectangle: () => new L.Draw.Rectangle(map, { shapeOptions: { color: "#3388ff", weight: activeLayerWeight("Polygon") } }),
+  circle: () => new L.Draw.Circle(map, { shapeOptions: { color: "#3388ff", weight: activeLayerWeight("Circle") } })
 };
 
 function stopDrawing() {
@@ -1031,10 +1149,12 @@ function showLinkModal(message, url) {
 /* ---------------------------------------------------------------------
    Data table (per layer): edit values, add/delete columns & rows
 --------------------------------------------------------------------- */
+const INTERNAL_STYLE_KEYS = new Set(["color", "weight", "opacity"]);
+
 function ensureLayerColumns(layer) {
   const known = new Set(layer.columns || ["name", "description"]);
   layer.features.forEach(f => Object.keys(f.properties).forEach(k => {
-    if (k !== "color" && !known.has(k)) known.add(k);
+    if (!INTERNAL_STYLE_KEYS.has(k) && !known.has(k)) known.add(k);
   }));
   layer.columns = Array.from(known);
 }
@@ -1098,7 +1218,7 @@ function renderDataTable(layer) {
       armThenConfirm(btn, "Sure?", () => {
         layer.columns = layer.columns.filter(c => c !== col);
         layer.features.forEach(f => delete f.properties[col]);
-        if (layer.colorField === col) layer.colorField = null;
+        if (layer.styleField === col) { layer.styleField = null; layer.styleMode = "individual"; }
         renderLayers(); renderLayerPanel(); persistDebounced();
         renderDataTable(layer);
       });
@@ -1133,59 +1253,143 @@ function openStyleModal(layerId) {
   const layer = getLayer(layerId);
   if (!layer) return;
   ensureLayerColumns(layer);
+  ensureStyleMode(layer);
   setModalWide(false);
   document.getElementById("modalTitle").textContent = `Style — ${layer.name}`;
   renderStyleModal(layer);
   document.getElementById("modalOverlay").classList.add("open");
 }
 
+const STYLE_MODES = [
+  { value: "uniform", label: "Uniform", hint: "Every item looks the same." },
+  { value: "individual", label: "Individual", hint: "Style each item on its own, from its popup." },
+  { value: "field", label: "By column", hint: "Every value in a column gets its own color, width & opacity." }
+];
+
 function renderStyleModal(layer) {
   const body = document.getElementById("modalBody");
+  const mode = layer.styleMode || "individual";
   body.innerHTML = `
-    <div class="fp-row" style="margin-bottom:14px;">
-      <label style="font-size:13px;white-space:nowrap;">Color by</label>
-      <select id="styleField" style="flex:1;padding:6px;border:1px solid var(--border);border-radius:4px;">
-        <option value="">Single color (layer default)</option>
-        ${layer.columns.map(f => `<option value="${escapeHtml(f)}" ${layer.colorField === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}
-      </select>
+    <div class="style-mode-picker">
+      ${STYLE_MODES.map(m => `<button type="button" class="style-mode-btn ${mode === m.value ? "active" : ""}" data-mode="${m.value}">${m.label}</button>`).join("")}
     </div>
-    <div id="styleLegend"></div>`;
-  renderLegend(layer);
-  document.getElementById("styleField").addEventListener("change", (e) => {
-    layer.colorField = e.target.value || null;
-    if (layer.colorField && !layer.colorMap) layer.colorMap = {};
-    renderLayers(); renderLayerPanel(); persistDebounced();
-    renderLegend(layer);
+    <p id="styleModeHint" style="font-size:12px;color:var(--text-dim);margin:8px 0 14px;">${STYLE_MODES.find(m => m.value === mode).hint}</p>
+    <div id="styleModeBody"></div>`;
+  renderStyleModeBody(layer);
+
+  body.querySelectorAll(".style-mode-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      layer.styleMode = btn.dataset.mode;
+      if (layer.styleMode === "field" && !layer.styleField && layer.columns.length) {
+        layer.styleField = layer.columns[0];
+      }
+      body.querySelectorAll(".style-mode-btn").forEach(b => b.classList.toggle("active", b === btn));
+      document.getElementById("styleModeHint").textContent = STYLE_MODES.find(m => m.value === layer.styleMode).hint;
+      renderLayers(); renderLayerPanel(); persistDebounced();
+      renderStyleModeBody(layer);
+    });
   });
 }
 
-function renderLegend(layer) {
-  const box = document.getElementById("styleLegend");
-  if (!layer.colorField) {
-    box.innerHTML = `<p style="font-size:12px;color:var(--text-dim);">Pick a field to automatically color every item in this layer by its value in that field.</p>`;
+function renderStyleModeBody(layer) {
+  const box = document.getElementById("styleModeBody");
+  if (layer.styleMode === "uniform") {
+    box.innerHTML = uniformStyleRowHtml(layer);
+    wireUniformStyleRow(box, layer, () => { renderLayers(); persistDebounced(); });
+  } else if (layer.styleMode === "field") {
+    box.innerHTML = `
+      <div class="fp-row" style="margin-bottom:14px;">
+        <label style="font-size:13px;white-space:nowrap;">Column</label>
+        <select id="styleFieldSelect" style="flex:1;padding:6px;border:1px solid var(--border);border-radius:4px;">
+          ${layer.columns.map(f => `<option value="${escapeHtml(f)}" ${layer.styleField === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}
+        </select>
+      </div>
+      <div id="styleFieldLegend"></div>`;
+    document.getElementById("styleFieldSelect").addEventListener("change", (e) => {
+      layer.styleField = e.target.value;
+      renderLayers(); renderLayerPanel(); persistDebounced();
+      renderStyleFieldLegend(layer);
+    });
+    renderStyleFieldLegend(layer);
+  } else {
+    box.innerHTML = `
+      <p style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Default for new items, and for any item that hasn't been styled individually yet:</p>
+      ${uniformStyleRowHtml(layer)}`;
+    wireUniformStyleRow(box, layer, () => { renderLayers(); renderLayerPanel(); persistDebounced(); });
+  }
+}
+
+function uniformStyleRowHtml(layer) {
+  const color = layer.color || "#3388ff";
+  const weight = layer.weight != null ? layer.weight : 4;
+  const opacity = layer.opacity != null ? Math.round(layer.opacity * 100) : 25;
+  return `
+    <div class="legend-row">
+      <button type="button" class="legend-swatch" id="uniformColor" style="background:${color}"></button>
+      <input type="number" id="uniformWidth" class="legend-width" min="1" max="20" value="${weight}" title="Line/border width (px)">
+      <input type="number" id="uniformOpacity" class="legend-opacity" min="0" max="100" step="5" value="${opacity}" title="Opacity (%)">
+      <span style="font-size:11px;color:var(--text-dim);">color · width · opacity%</span>
+    </div>`;
+}
+
+function wireUniformStyleRow(scope, layer, onChange) {
+  scope.querySelector("#uniformColor").addEventListener("click", (e) => {
+    openColorPicker(layer.color || "#3388ff", (c) => {
+      layer.color = c;
+      e.currentTarget.style.background = c;
+      onChange();
+    }, e.currentTarget);
+  });
+  scope.querySelector("#uniformWidth").addEventListener("change", (e) => {
+    layer.weight = Math.max(1, +e.target.value || 1);
+    onChange();
+  });
+  scope.querySelector("#uniformOpacity").addEventListener("change", (e) => {
+    layer.opacity = Math.max(0, Math.min(100, +e.target.value)) / 100;
+    onChange();
+  });
+}
+
+function renderStyleFieldLegend(layer) {
+  const box = document.getElementById("styleFieldLegend");
+  if (!layer.styleField) {
+    box.innerHTML = `<p style="font-size:12px;color:var(--text-dim);">This layer has no columns yet — add one from its data table first.</p>`;
     return;
   }
   const values = new Set();
-  layer.features.forEach(f => values.add(String(f.properties[layer.colorField] ?? "(blank)")));
-  if (!layer.colorMap) layer.colorMap = {};
-  let html = `<div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">Click a swatch to change its color.</div>`;
+  layer.features.forEach(f => values.add(String(f.properties[layer.styleField] ?? "(blank)")));
+  if (!layer.styleMap) layer.styleMap = {};
+  let html = `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">color · width · opacity% · value</div>`;
   Array.from(values).sort().forEach(val => {
-    if (!layer.colorMap[val]) layer.colorMap[val] = colorForIndex(Object.keys(layer.colorMap).length);
+    if (!layer.styleMap[val]) {
+      layer.styleMap[val] = { color: colorForIndex(Object.keys(layer.styleMap).length), weight: layer.weight != null ? layer.weight : 4, opacity: layer.opacity != null ? layer.opacity : 0.25 };
+    }
+    const s = layer.styleMap[val];
     html += `<div class="legend-row" data-val="${escapeHtml(val)}">
-      <button class="legend-swatch" style="background:${layer.colorMap[val]}"></button>
+      <button type="button" class="legend-swatch" style="background:${s.color}"></button>
+      <input type="number" class="legend-width" min="1" max="20" value="${s.weight}">
+      <input type="number" class="legend-opacity" min="0" max="100" step="5" value="${Math.round(s.opacity * 100)}">
       <span>${escapeHtml(val)}</span>
     </div>`;
   });
   if (values.size === 0) html += `<p style="font-size:12px;color:var(--text-dim);">This layer has no items yet.</p>`;
-  box.innerHTML += html;
-  box.querySelectorAll(".legend-swatch").forEach(sw => {
-    sw.addEventListener("click", () => {
-      const val = sw.closest(".legend-row").dataset.val;
-      openColorPicker(layer.colorMap[val], (c) => {
-        layer.colorMap[val] = c;
-        sw.style.background = c;
+  box.innerHTML = html;
+  box.querySelectorAll(".legend-row[data-val]").forEach(row => {
+    const val = row.dataset.val;
+    row.querySelector(".legend-swatch").addEventListener("click", (e) => {
+      openColorPicker(layer.styleMap[val].color, (c) => {
+        layer.styleMap[val].color = c;
+        e.currentTarget.style.background = c;
         renderLayers(); persistDebounced();
-      }, sw);
+      }, e.currentTarget);
+    });
+    row.querySelector(".legend-width").addEventListener("change", (e) => {
+      layer.styleMap[val].weight = Math.max(1, +e.target.value || 1);
+      renderLayers(); persistDebounced();
+    });
+    row.querySelector(".legend-opacity").addEventListener("change", (e) => {
+      layer.styleMap[val].opacity = Math.max(0, Math.min(100, +e.target.value)) / 100;
+      renderLayers(); persistDebounced();
     });
   });
 }
@@ -1411,13 +1615,20 @@ async function githubGetFile(path, branch) {
   return { sha: data.sha, content: base64ToUtf8(data.content) };
 }
 
-async function githubPutFile(path, content, message, branch, knownSha) {
+async function githubPutFile(path, content, message, branch, knownSha, retriesLeft) {
+  if (retriesLeft === undefined) retriesLeft = 2;
   const sha = knownSha !== undefined ? knownSha : (await githubGetFile(path, branch) || {}).sha;
   const body = { message, content: utf8ToBase64(content), branch };
   if (sha) body.sha = sha;
   const res = await githubApi(`contents/${path}`, { method: "PUT", body: JSON.stringify(body) });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+    const isShaConflict = res.status === 409 || (res.status === 422 && /does not match/i.test(err.message || ""));
+    if (isShaConflict && retriesLeft > 0) {
+      // Someone (another tab, another device, a manual commit) changed this file since we
+      // last read its sha. Re-fetch the current sha and retry instead of failing outright.
+      return githubPutFile(path, content, message, branch, undefined, retriesLeft - 1);
+    }
     throw new Error(err.message || `Couldn't write ${path} (${res.status})`);
   }
   return res.json();
@@ -1490,6 +1701,9 @@ async function pushAllLocalMapsToGitHub() {
   if (!ids.length) { toast("No local maps to push."); return; }
   toast(`Pushing ${ids.length} map(s) to GitHub…`);
 
+  clearTimeout(githubSyncTimer);
+  githubSyncing = true;
+
   let index = [];
   let indexSha = null;
   try {
@@ -1498,24 +1712,28 @@ async function pushAllLocalMapsToGitHub() {
   } catch (e) { console.error(e); }
 
   let ok = 0, failed = 0;
-  for (const id of ids) {
-    const proj = loadProject(id);
-    if (!proj) continue;
-    const filename = proj.repoFile || slugify(proj.projectName);
-    try {
-      await githubPutFile(`maps/${filename}`, JSON.stringify(proj, null, 2), `Push map: ${proj.projectName}`, branch);
-      proj.repoFile = filename;
-      localStorage.setItem(LS_PROJECT_PREFIX + id, JSON.stringify(proj));
-      upsertIndexEntry(index, filename, proj.projectName);
-      ok++;
-    } catch (err) {
-      console.error(`Failed to push "${proj.projectName}"`, err);
-      failed++;
-    }
-  }
   try {
-    await githubPutFile("maps/index.json", JSON.stringify(index, null, 2), "Update maps index", branch, indexSha);
-  } catch (err) { console.error(err); }
+    for (const id of ids) {
+      const proj = loadProject(id);
+      if (!proj) continue;
+      const filename = proj.repoFile || slugify(proj.projectName);
+      try {
+        await githubPutFile(`maps/${filename}`, JSON.stringify(proj, null, 2), `Push map: ${proj.projectName}`, branch);
+        proj.repoFile = filename;
+        localStorage.setItem(LS_PROJECT_PREFIX + id, JSON.stringify(proj));
+        upsertIndexEntry(index, filename, proj.projectName);
+        ok++;
+      } catch (err) {
+        console.error(`Failed to push "${proj.projectName}"`, err);
+        failed++;
+      }
+    }
+    try {
+      await githubPutFile("maps/index.json", JSON.stringify(index, null, 2), "Update maps index", branch, indexSha);
+    } catch (err) { console.error(err); }
+  } finally {
+    githubSyncing = false;
+  }
 
   toast(failed ? `Pushed ${ok} map(s), ${failed} failed — check console.` : `Pushed ${ok} map(s) to GitHub.`);
 }
@@ -1604,6 +1822,8 @@ function stateToGeoJSON() {
           ...f.properties,
           layer: layer.name,
           color: featureStyle(layer, f),
+          opacity: featureOpacity(layer, f),
+          ...(f.geometry.type !== "Point" ? { weight: featureWeight(layer, f) } : {}),
           ...(f.geometry.type === "Circle" ? { radius: f.geometry.radius } : {})
         }
       });
@@ -1620,11 +1840,12 @@ function exportGeoJSON() {
 
 function safeFileName(s) { return (s || "map").replace(/[^a-z0-9\-_ ]/gi, "").trim() || "map"; }
 
-function kmlColor(hex) {
+function kmlColor(hex, opacity) {
   hex = toHexColor(hex).replace("#", "");
-  if (hex.length !== 6) return "ff0000ff";
+  if (hex.length !== 6) hex = "ff0000";
   const r = hex.slice(0,2), g = hex.slice(2,4), b = hex.slice(4,6);
-  return `ff${b}${g}${r}`;
+  const alpha = Math.round(Math.max(0, Math.min(1, opacity == null ? 1 : opacity)) * 255).toString(16).padStart(2, "0");
+  return `${alpha}${b}${g}${r}`;
 }
 
 function exportKML() {
@@ -1632,16 +1853,21 @@ function exportKML() {
   state.layers.forEach(layer => {
     xml += `<Folder><name>${escapeHtml(layer.name)}</name>\n`;
     layer.features.forEach(f => {
-      const color = kmlColor(featureStyle(layer, f));
+      const baseColor = featureStyle(layer, f);
+      const weight = featureWeight(layer, f);
+      const opacity = featureOpacity(layer, f);
+      const g = f.geometry;
+      const iconColor = kmlColor(baseColor, 1);
+      const strokeColor = kmlColor(baseColor, g.type === "LineString" ? opacity : 1);
+      const fillColor = kmlColor(baseColor, g.type === "Polygon" ? opacity : 0.5);
       xml += `<Placemark><name>${escapeHtml(f.properties.name || "")}</name><description>${escapeHtml(f.properties.description || "")}</description>`;
-      const extraKeys = Object.keys(f.properties).filter(k => k !== "name" && k !== "description" && k !== "color");
+      const extraKeys = Object.keys(f.properties).filter(k => !INTERNAL_STYLE_KEYS.has(k) && k !== "name" && k !== "description");
       if (extraKeys.length) {
         xml += `<ExtendedData>` + extraKeys.map(k =>
           `<Data name="${escapeHtml(k)}"><value>${escapeHtml(f.properties[k])}</value></Data>`
         ).join("") + `</ExtendedData>`;
       }
-      xml += `<Style><IconStyle><color>${color}</color></IconStyle><LineStyle><color>${color}</color><width>3</width></LineStyle><PolyStyle><color>7f${color.slice(2)}</color></PolyStyle></Style>`;
-      const g = f.geometry;
+      xml += `<Style><IconStyle><color>${iconColor}</color></IconStyle><LineStyle><color>${strokeColor}</color><width>${weight}</width></LineStyle><PolyStyle><color>${fillColor}</color></PolyStyle></Style>`;
       if (g.type === "Point" || g.type === "Circle") {
         xml += `<Point><coordinates>${g.coordinates[0]},${g.coordinates[1]},0</coordinates></Point>`;
       } else if (g.type === "LineString") {
