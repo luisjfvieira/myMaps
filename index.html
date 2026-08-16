@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>My Maps</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <!-- Top bar -->
+  <header id="topbar">
+    <button id="btnSidebarToggle" class="icon-btn" title="Toggle layers panel">&#9776;</button>
+    <input id="projectName" type="text" value="Untitled map" spellcheck="false">
+
+    <div class="menu" id="menuFile">
+      <button class="menu-btn">File ▾</button>
+      <div class="menu-dropdown">
+        <button id="btnNew">New map</button>
+        <button id="btnOpen">Open map (this browser)…</button>
+        <hr>
+        <button id="btnBrowseRepo">Browse repo maps…</button>
+        <button id="btnSaveRepo">Save to repo folder…</button>
+        <button id="btnGitHubSync">GitHub auto-sync settings…</button>
+        <hr>
+        <button id="btnImport">Import GeoJSON / KML</button>
+        <button id="btnExportGeoJSON">Export as GeoJSON</button>
+        <button id="btnExportKML">Export as KML</button>
+        <hr>
+        <button id="btnShare">Get shareable link</button>
+      </div>
+    </div>
+    <input type="file" id="fileImport" accept=".json,.geojson,.kml" style="display:none">
+    <span id="githubSyncStatus" class="sync-status"></span>
+
+    <div class="search-wrap">
+      <input id="searchBox" type="text" placeholder="Search for a place…" autocomplete="off">
+      <div id="searchResults" class="search-results"></div>
+    </div>
+
+  </header>
+
+  <div id="body">
+
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div id="layerListHeader">
+        <span>Layers <span id="layerCount" class="count-badge">0</span></span>
+        <button id="btnAddLayer" class="small-btn" title="Add layer">+ Add layer</button>
+      </div>
+      <div id="layerList"></div>
+      <div id="sidebarFooter">
+        No layer limit — add as many as you need.
+      </div>
+    </aside>
+
+    <!-- Map -->
+    <main id="mapWrap">
+      <div id="map"></div>
+
+      <!-- Drawing toolbar -->
+      <div id="drawToolbar" class="draw-toolbar">
+        <button data-tool="marker" class="tool-btn" title="Add marker">📍</button>
+        <button data-tool="polyline" class="tool-btn" title="Draw line">／</button>
+        <button data-tool="polygon" class="tool-btn" title="Draw polygon / area">▲</button>
+        <button data-tool="rectangle" class="tool-btn" title="Draw rectangle">▭</button>
+        <button data-tool="circle" class="tool-btn" title="Draw circle">◯</button>
+        <span class="tool-sep"></span>
+        <span id="activeLayerLabel" class="active-layer-label">Drawing on: —</span>
+      </div>
+
+      <!-- Base map switcher -->
+      <div id="baseLayerBar" class="base-layer-bar">
+        <button data-base="street" class="bl-btn" title="Street">Street</button>
+        <button data-base="satellite" class="bl-btn" title="Satellite">Satellite</button>
+        <button data-base="hybrid" class="bl-btn" title="Hybrid (satellite + labels)">Hybrid</button>
+        <button data-base="terrain" class="bl-btn" title="Terrain">Terrain</button>
+        <button data-base="dark" class="bl-btn" title="Dark">Dark</button>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- Open map modal -->
+<div id="modalOverlay" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <span id="modalTitle">Open map</span>
+      <button id="modalClose" class="icon-btn">&times;</button>
+    </div>
+    <div id="modalBody" class="modal-body"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
